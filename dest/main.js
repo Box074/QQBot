@@ -1,0 +1,150 @@
+import { readFileSync } from "fs";
+import * as oicq from "oicq";
+import { createInterface } from "readline";
+import { Platform } from "oicq";
+import { oicq_beginAnalyze } from "./modloganalyzer.js";
+import { printModInfo } from "./modinfo.js";
+export const config = JSON.parse(readFileSync("config.json", "utf-8"));
+let signGroups = [];
+let blacklist = new Set();
+const rl = createInterface(process.stdin, process.stdout);
+rl.on('line', i => {
+    if (i == 'stop')
+        process.exit();
+});
+var client = oicq.createClient(config["qqNumber"], {
+    platform: Platform.Android
+});
+client.on("system.login.qrcode", (data) => {
+    client.logger.mark("扫码登陆");
+    console.log("扫码后Enter");
+    process.stdin.once("data", () => {
+        client.login();
+    });
+});
+client.on("system.login.device", (data) => {
+    client.logger.mark("输入密保手机收到的短信验证码后按下回车键继续。");
+    client.sendSmsCode();
+    rl.question("sms?", sms => {
+        client.submitSmsCode(sms);
+    });
+});
+client.on("system.login.slider", (data) => {
+    console.log("滑动验证：" + data.url);
+    rl.question("ticket?", ticket => {
+        client.submitSlider(ticket);
+    });
+});
+client.on("request.group.add", (ev) => {
+    if (config.watchGroup.includes(ev.group_id)) {
+        if (blacklist.has(ev.user_id)) {
+            client.setGroupAddRequest(ev.flag, false, "黑名单");
+        }
+    }
+});
+if (process.env.USE_QRCODE) {
+    client.login();
+}
+else {
+    client.login(config["qqPassword"]);
+}
+//
+client.on("message.group", async (ev) => {
+    try {
+        const at = ev.message.filter(x => x.type == 'at');
+        const atme = at.filter(x => x.qq != 'all' && (x.qq == client.uin || config["watchQQ"].includes(x.qq)));
+        if (atme) {
+            const text = ev.message.filter(x => x.type == 'text').map(x => x.text).join('').trim();
+            client.logger.info(text);
+            if (ev.source) {
+                const source = (await ev.group.getChatHistory(ev.source.seq, 1))[0];
+                if (source) {
+                    if (text == "获取代码") {
+                        const m = source.message[0];
+                        if (m.type == 'xml' || m.type == 'json') {
+                            ev.reply(m.data?.toString());
+                        }
+                        return;
+                    }
+                    if (text.toLowerCase() == "getcode") {
+                        ev.reply(await client.makeForwardMsg(source.message.map(x => {
+                            return {
+                                user_id: client.uin,
+                                message: JSON.stringify(x, undefined, 4)
+                            };
+                        })));
+                        return;
+                    }
+                    const file = source.message.filter(x => x.type == 'file')[0];
+                    if (file) {
+                        if (text.toLowerCase() == "分析modlog") {
+                            await oicq_beginAnalyze(ev, file);
+                        }
+                        if (text.toLowerCase() == "获取链接") {
+                            ev.reply(await ev.group.getFileUrl(file.fid), true);
+                        }
+                    }
+                }
+            }
+            else {
+                if (ev.sender.user_id == config.masterQQ) {
+                    if (text.toLowerCase() == "restart") {
+                        process.exit(0);
+                    }
+                    else if (text.toLowerCase() == "stop") {
+                        process.exit(100);
+                    }
+                    else if (text.toLowerCase() == "check") {
+                        ev.reply("Running", true);
+                        return;
+                    }
+                    else if (text.startsWith("黑名单")) {
+                        const qq = text.substring("黑名单".length).trim();
+                        blacklist.add(Number.parseInt(qq));
+                    }
+                }
+                if (text.toLowerCase() == "sb" || text == "傻逼" || text == "煞笔") {
+                    ev.reply({
+                        type: "image",
+                        file: readFileSync("./images/cat-cry.jpg")
+                    });
+                }
+                if (text.toLowerCase().startsWith("获取mod信息") || text.toLowerCase().startsWith("mod信息")) {
+                    const modname = text.substring(text.indexOf("信息") + "信息".length);
+                    await printModInfo(ev.group, modname);
+                }
+            }
+        }
+    }
+    catch (e) {
+        ev.reply(await client.makeForwardMsg([{
+                user_id: client.uin,
+                nickname: "Excpetion",
+                message: e?.stack ?? e?.toString() ?? e
+            }]));
+    }
+});
+setInterval(() => {
+    if (new Date().getUTCHours() == 0)
+        signGroups.length = 0;
+    for (const group of config["signGroup"]) {
+        if (signGroups.includes(group))
+            continue;
+        if (client.isOnline()) {
+            signGroups.push(group);
+            setTimeout(() => {
+                try {
+                    client.sendGroupMsg(group, "冒泡");
+                }
+                catch (e) {
+                    const id = signGroups.indexOf(group);
+                    if (id != -1)
+                        signGroups.splice(id);
+                }
+            }, Math.random() * 1000);
+        }
+    }
+}, 2000);
+process.on("unhandledRejection", (reason, promise) => {
+    console.log('Unhandled Rejection at:', promise, 'reason:', reason);
+});
