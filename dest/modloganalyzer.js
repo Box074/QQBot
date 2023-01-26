@@ -1,10 +1,16 @@
 import { basename } from "path";
 import axios from "axios";
 let modlinksCache = undefined;
+let origModLinks = undefined;
 export async function getModLinks() {
-    if (modlinksCache)
+    if (origModLinks && modlinksCache)
         return modlinksCache;
-    modlinksCache = (await axios.get("https://hkmm-mods.top/modlinks")).data;
+    origModLinks = (await axios.get("https://github.com/HKLab/modlinks-archive/raw/master/modlinks.json")).data;
+    modlinksCache = {};
+    for (const v of Object.values(origModLinks.mods)
+        .map(x => getLatestMod(x))) {
+        modlinksCache[v.name] = v;
+    }
     return modlinksCache;
 }
 export async function oicq_beginAnalyze(ev, file) {
@@ -18,11 +24,11 @@ export async function oicq_beginAnalyze(ev, file) {
     const fd = (await axios.get(furl, {
         responseType: 'text'
     })).data;
-    const result = await analyzeModLog(ml, fd);
-    const rtext = [];
+    const result = await analyzeModLog(origModLinks, fd);
+    const resultText = [];
     const advices = [];
     if (result.missingMod.length > 0) {
-        rtext.push({
+        resultText.push({
             user_id: bot.uin,
             nickname: "分析结果 - 缺失的Mods",
             message: result.missingMod.join('\n')
@@ -32,20 +38,20 @@ export async function oicq_beginAnalyze(ev, file) {
                 user_id: bot.uin,
                 nickname: "分析结果 - 建议",
                 message: `安装缺失的Mod: ${mod}
-下载地址：https://ghproxy.net/${getLatestMod(ml.mods[mod]).link}
+下载地址：https://ghproxy.net/${ml[mod].link}
 `
             });
         }
     }
     if (result.loadedMods.length > 0) {
-        rtext.push({
+        resultText.push({
             user_id: bot.uin,
             nickname: "分析结果 - 已加载的Mods",
             message: result.loadedMods.map(x => x.join(': ')).join('\n')
         });
     }
     if (result.duplicateMods.length > 0) {
-        rtext.push({
+        resultText.push({
             user_id: bot.uin,
             nickname: "分析结果 - 重复加载的Mods",
             message: result.duplicateMods.join('\n')
@@ -59,7 +65,7 @@ export async function oicq_beginAnalyze(ev, file) {
         }
     }
     if (result.requireUpdateMods.length > 0) {
-        rtext.push({
+        resultText.push({
             user_id: bot.uin,
             nickname: "分析结果 - 需要更新的Mods",
             message: result.duplicateMods.join('\n')
@@ -69,20 +75,20 @@ export async function oicq_beginAnalyze(ev, file) {
                 user_id: bot.uin,
                 nickname: "分析结果 - 建议",
                 message: `更新Mod至最新版本: ${mod}
-下载地址：https://ghproxy.net/${getLatestMod(ml.mods[mod]).link}
+下载地址：https://ghproxy.net/${ml[mod].link}
 `
             });
         }
     }
-    ev.reply(await bot.makeForwardMsg([...advices, ...rtext]));
+    ev.reply(await bot.makeForwardMsg([...advices, ...resultText]));
 }
 export async function analyzeModLog(modlinks, text) {
     text = text.replaceAll('\r\n', '\n');
     const lines = text.split('\n');
     if (!lines.includes('[INFO]:[API] - Starting mod loading'))
         throw new Error("无效的ModLog.txt");
-    let hkver = undefined;
-    let apiver = undefined;
+    let hkVer = undefined;
+    let apiVer = undefined;
     const loadedMods = [];
     const duplicateMods = new Set();
     const index_flm = lines.indexOf('[INFO]:[API] - Finished loading mods:') + 1;
@@ -98,8 +104,8 @@ export async function analyzeModLog(modlinks, text) {
             else {
                 if (parts[0] == "Modding API") {
                     const av = parts[1].split('-');
-                    hkver = av[0];
-                    apiver = Number.parseInt(av[1]);
+                    hkVer = av[0];
+                    apiVer = Number.parseInt(av[1]);
                 }
                 loadedMods.push([parts[0], parts[1]]);
             }
@@ -148,8 +154,8 @@ export async function analyzeModLog(modlinks, text) {
         duplicateMods: [...duplicateMods],
         missingMod: [...missingMod],
         requireUpdateMods: [...requireUpdateMods],
-        hkver,
-        apiver
+        hkVer,
+        apiVer
     };
 }
 export function findModWithFileSHA(modlinks, sha) {
@@ -160,10 +166,10 @@ export function findModWithFileSHA(modlinks, sha) {
             const v = mod[ver];
             if (!v.ei_files?.files)
                 continue;
-            const msha = Object.values(v.ei_files.files);
+            const modSHA = Object.values(v.ei_files.files);
             let u = true;
             for (const s of sha) {
-                if (!msha.includes(s)) {
+                if (!modSHA.includes(s)) {
                     u = false;
                     break;
                 }
@@ -183,10 +189,10 @@ export function findModWithFileName(modlinks, files) {
             const v = mod[ver];
             if (!v.ei_files?.files)
                 continue;
-            const mfiles = Object.keys(v.ei_files.files).map(x => basename(x));
+            const modFiles = Object.keys(v.ei_files.files).map(x => basename(x));
             let u = true;
             for (const iterator of files) {
-                if (!mfiles.includes(iterator)) {
+                if (!modFiles.includes(iterator)) {
                     u = false;
                     break;
                 }
@@ -199,13 +205,13 @@ export function findModWithFileName(modlinks, files) {
     return [...result.values()];
 }
 export function isLaterVersion(a, b) {
-    const apart = a.split('.');
-    const bpart = b.split('.');
-    for (let i = 0; i < apart.length; i++) {
-        if (i >= bpart.length)
+    const aPart = a.split('.');
+    const bPart = b.split('.');
+    for (let i = 0; i < aPart.length; i++) {
+        if (i >= bPart.length)
             return true;
-        const va = Number.parseInt(apart[i]);
-        const vb = Number.parseInt(bpart[i]);
+        const va = Number.parseInt(aPart[i]);
+        const vb = Number.parseInt(bPart[i]);
         if (va > vb)
             return true;
         else if (va < vb)
@@ -223,3 +229,4 @@ export function getLatestMod(mod) {
     }
     return latest;
 }
+//# sourceMappingURL=modloganalyzer.js.map

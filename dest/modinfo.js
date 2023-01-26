@@ -1,36 +1,82 @@
-import { getLatestMod, getModLinks } from "./modloganalyzer.js";
-export async function printModInfo(group, name) {
+import { readFileSync } from "fs";
+import { filterMods, prepareFilter, processingModName } from "./modfilter.js";
+import { getModLinks } from "./modloganalyzer.js";
+import { createQA } from "./QA.js";
+export const modalias = JSON.parse(readFileSync("./chinese_modalias.json", 'utf8'));
+export const moddesc = JSON.parse(readFileSync("./chinese_moddesc.json", 'utf8'));
+export async function filterModNamesDefault(client, name) {
+    client.logger.info("Filter:" + name);
+    const filter = prepareFilter(name, undefined, mod => modalias[processingModName(mod.name)]);
+    const mods = filterMods(Object.values(await getModLinks()), filter);
+    return mods.map(x => x.name);
+}
+export async function printAllMods(group, sender, name) {
     const ml = await getModLinks();
-    name = name.trim();
-    const vc = ml.mods[name.trim()];
-    if (!vc) {
-        group.sendMsg("未找到mod: " + name);
-        return;
+    let modNames = Object.keys(ml)
+        .sort((a, b) => a.localeCompare(b));
+    if (name) {
+        modNames = await filterModNamesDefault(group.client, name);
     }
-    let lv = getLatestMod(vc);
+    return await createQA(group.client, sender, group, modNames.map(x => {
+        const pn = processingModName(x);
+        return [x + (modalias[pn] ? ` (${modalias[pn]})` : ''), () => {
+                printModInfo(group, x);
+            }];
+    }), "Mods列表", undefined, false);
+}
+export async function printModInfo(group, name) {
+    if (typeof name == 'string') {
+        const ml = await getModLinks();
+        const pmn = {};
+        const oname = name;
+        for (const modName in ml) {
+            const mn = processingModName(modName);
+            pmn[mn] = ml[modName];
+        }
+        name = processingModName(name);
+        let lv = pmn[name];
+        if (!lv) {
+            const fl = await filterModNamesDefault(group.client, oname);
+            if (fl.length == 0) {
+                group.sendMsg("未找到mod: " + oname);
+                return;
+            }
+            else if (fl.length > 1) {
+                group.sendMsg(`未找到mod: ${oname}
+是否想寻找${fl[0]}?
+输入 '#bot 筛选mods:${oname} '获得更多结果`);
+                return;
+            }
+            lv = ml[fl[0]];
+        }
+        name = lv;
+    }
     const uin = group.client.uin;
+    const aname = name.name.toLowerCase().replaceAll(' ', '');
     await group.sendMsg(await group.client.makeForwardMsg([
         {
             user_id: uin,
             nickname: "Mod信息",
-            message: `Mod名称：${name}
-版本号：${lv.version}
-最近更新：${getModDate(lv.date).toLocaleString()}
-大小：${ConvertSize(lv.ei_files?.size ?? 0)}
-仓库地址：${lv.repository}
-下载地址：https://ghrpoxy.net/${lv.link}
-SHA256: ${lv.ei_files?.sha256}
+            message: `Mod名称：${name.name} (${modalias[aname] ? modalias[aname] : ""})
+版本号：${name.version}
+最近更新：${getModDate(name.date).toLocaleString()}
+大小：${ConvertSize(name.ei_files?.size ?? 0)}
+仓库地址：${name.repository}
+下载地址：https://ghrpoxy.net/${name.link}
+SHA256: ${name.ei_files?.sha256}
 `
         },
         {
             user_id: uin,
             nickname: "Mod描述",
-            message: lv.desc
+            message: name.desc + (moddesc[aname] ? ("\n\n" + moddesc[aname] + `
+
+mod描述来自: https://docs.qq.com/sheet/DSm90dmtWUUhhUmpP?tab=BB08J2`) : "")
         },
         {
             user_id: uin,
             nickname: "依赖Mods",
-            message: lv.dependencies.length > 0 ? lv.dependencies.join('\n') : '（无）'
+            message: name.dependencies.length > 0 ? name.dependencies.join('\n') : '（无）'
         }
     ]));
 }
@@ -52,3 +98,4 @@ export function ConvertSize(bytes) {
         return `${Math.round(bytes / 1024)} KB`;
     return `${bytes} B`;
 }
+//# sourceMappingURL=modinfo.js.map

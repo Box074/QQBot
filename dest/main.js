@@ -3,7 +3,8 @@ import * as oicq from "oicq";
 import { createInterface } from "readline";
 import { Platform } from "oicq";
 import { oicq_beginAnalyze } from "./modloganalyzer.js";
-import { printModInfo } from "./modinfo.js";
+import { printAllMods, printModInfo } from "./modinfo.js";
+import { createQA } from "./QA.js";
 export const config = JSON.parse(readFileSync("config.json", "utf-8"));
 let signGroups = [];
 let blacklist = new Set();
@@ -52,9 +53,13 @@ else {
 client.on("message.group", async (ev) => {
     try {
         const at = ev.message.filter(x => x.type == 'at');
-        const atme = at.filter(x => x.qq != 'all' && (x.qq == client.uin || config["watchQQ"].includes(x.qq)));
-        if (atme) {
-            const text = ev.message.filter(x => x.type == 'text').map(x => x.text).join('').trim();
+        let atMe = at.filter(x => x.qq != 'all' && (x.qq == client.uin || config["watchQQ"].includes(x.qq))).length > 0;
+        let text = ev.message.filter(x => x.type == 'text').map(x => x.text).join('').trim();
+        if (text.startsWith("#bot")) {
+            text = text.substring("#bot".length).trim();
+            atMe = true;
+        }
+        if (atMe) {
             client.logger.info(text);
             if (ev.source) {
                 const source = (await ev.group.getChatHistory(ev.source.seq, 1))[0];
@@ -102,6 +107,13 @@ client.on("message.group", async (ev) => {
                         const qq = text.substring("黑名单".length).trim();
                         blacklist.add(Number.parseInt(qq));
                     }
+                    else if (text == "Test") {
+                        await createQA(client, ev.sender.user_id, ev.group, [
+                            ["Test1", () => ev.reply("Test1")],
+                            ["Test2", () => ev.reply("Test2")],
+                            ["Test3", () => ev.reply("Test3")]
+                        ], "123", undefined, true);
+                    }
                 }
                 if (text.toLowerCase() == "sb" || text == "傻逼" || text == "煞笔") {
                     ev.reply({
@@ -109,9 +121,24 @@ client.on("message.group", async (ev) => {
                         file: readFileSync("./images/cat-cry.jpg")
                     });
                 }
-                if (text.toLowerCase().startsWith("获取mod信息") || text.toLowerCase().startsWith("mod信息")) {
-                    const modname = text.substring(text.indexOf("信息") + "信息".length);
-                    await printModInfo(ev.group, modname);
+                if (text.toLowerCase().startsWith("获取mod信息")
+                    || text.toLowerCase().startsWith("查询mod信息")
+                    || text.toLowerCase().startsWith("mod信息")) {
+                    const modName = text.substring(text.indexOf("信息") + "信息".length);
+                    await printModInfo(ev.group, modName);
+                }
+                if (text.toLowerCase().startsWith("查询mod")
+                    || text.toLowerCase().startsWith("mod查询")) {
+                    const modName = text.substring("查询mod".length);
+                    await printModInfo(ev.group, modName);
+                }
+                if (text.toLowerCase() == "所有mods" || text.toLowerCase().endsWith("所有mods")) {
+                    await printAllMods(ev.group, ev.sender.user_id);
+                }
+                if (text.toLowerCase().startsWith("筛选mods:") || text.toLowerCase().startsWith("筛选mod:")) {
+                    const filter = text.substring(text.indexOf(":") + 1);
+                    client.logger.info("Filter: " + filter);
+                    await printAllMods(ev.group, ev.sender.user_id, filter);
                 }
             }
         }
@@ -119,8 +146,8 @@ client.on("message.group", async (ev) => {
     catch (e) {
         ev.reply(await client.makeForwardMsg([{
                 user_id: client.uin,
-                nickname: "Excpetion",
-                message: e?.stack ?? e?.toString() ?? e
+                nickname: "Exception",
+                message: JSON.stringify(e)
             }]));
     }
 });
@@ -148,3 +175,4 @@ setInterval(() => {
 process.on("unhandledRejection", (reason, promise) => {
     console.log('Unhandled Rejection at:', promise, 'reason:', reason);
 });
+//# sourceMappingURL=main.js.map

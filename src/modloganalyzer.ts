@@ -3,17 +3,25 @@ import { ModCollection, ModLinksManifestData, ModVersionCollection } from "./typ
 import axios from "axios";
 import { FileElem, Forwardable, GroupMessageEvent } from "oicq";
 
-let modlinksCache: ModCollection = undefined as any;
+
+let modlinksCache: Record<string, ModLinksManifestData> = undefined as any;
+let origModLinks: ModCollection = undefined as any;
 
 export async function getModLinks() {
-    if(modlinksCache) return modlinksCache;
-    modlinksCache = (await axios.get<ModCollection>("https://hkmm-mods.top/modlinks")).data;
+    if (origModLinks && modlinksCache) return modlinksCache;
+    origModLinks = (await axios.get<ModCollection>("https://github.com/HKLab/modlinks-archive/raw/master/modlinks.json")).data;
+    modlinksCache = {};
+    for (const v of Object.values(origModLinks.mods)
+        .map(x => getLatestMod(x))) {
+        modlinksCache[v.name] = v;
+    }
     return modlinksCache;
 }
 
+
 export async function oicq_beginAnalyze(ev: GroupMessageEvent, file: FileElem) {
     const bot = ev.group.client;
-    if(file.size > 1024 * 1024 * 2) {
+    if (file.size > 1024 * 1024 * 2) {
         ev.reply("文件过大", true);
         return;
     }
@@ -22,11 +30,11 @@ export async function oicq_beginAnalyze(ev: GroupMessageEvent, file: FileElem) {
     const fd = (await axios.get<string>(furl, {
         responseType: 'text'
     })).data;
-    const result = await analyzeModLog(ml, fd);
-    const rtext: Forwardable[] = [];
+    const result = await analyzeModLog(origModLinks, fd);
+    const resultText: Forwardable[] = [];
     const advices: Forwardable[] = [];
-    if(result.missingMod.length > 0) {
-        rtext.push({
+    if (result.missingMod.length > 0) {
+        resultText.push({
             user_id: bot.uin,
             nickname: "分析结果 - 缺失的Mods",
             message: result.missingMod.join('\n')
@@ -36,20 +44,20 @@ export async function oicq_beginAnalyze(ev: GroupMessageEvent, file: FileElem) {
                 user_id: bot.uin,
                 nickname: "分析结果 - 建议",
                 message: `安装缺失的Mod: ${mod}
-下载地址：https://ghproxy.net/${getLatestMod(ml.mods[mod]).link}
+下载地址：https://ghproxy.net/${ml[mod].link}
 `
             });
         }
     }
-    if(result.loadedMods.length > 0) {
-        rtext.push({
+    if (result.loadedMods.length > 0) {
+        resultText.push({
             user_id: bot.uin,
             nickname: "分析结果 - 已加载的Mods",
             message: result.loadedMods.map(x => x.join(': ')).join('\n')
         });
     }
-    if(result.duplicateMods.length > 0) {
-        rtext.push({
+    if (result.duplicateMods.length > 0) {
+        resultText.push({
             user_id: bot.uin,
             nickname: "分析结果 - 重复加载的Mods",
             message: result.duplicateMods.join('\n')
@@ -62,8 +70,8 @@ export async function oicq_beginAnalyze(ev: GroupMessageEvent, file: FileElem) {
             });
         }
     }
-    if(result.requireUpdateMods.length > 0) {
-        rtext.push({
+    if (result.requireUpdateMods.length > 0) {
+        resultText.push({
             user_id: bot.uin,
             nickname: "分析结果 - 需要更新的Mods",
             message: result.duplicateMods.join('\n')
@@ -73,21 +81,21 @@ export async function oicq_beginAnalyze(ev: GroupMessageEvent, file: FileElem) {
                 user_id: bot.uin,
                 nickname: "分析结果 - 建议",
                 message: `更新Mod至最新版本: ${mod}
-下载地址：https://ghproxy.net/${getLatestMod(ml.mods[mod]).link}
+下载地址：https://ghproxy.net/${ml[mod].link}
 `
             });
         }
     }
-    
-    ev.reply(await bot.makeForwardMsg([...advices ,...rtext]));
+
+    ev.reply(await bot.makeForwardMsg([...advices, ...resultText]));
 }
 
 export async function analyzeModLog(modlinks: ModCollection, text: string) {
     text = text.replaceAll('\r\n', '\n');
     const lines = text.split('\n');
     if (!lines.includes('[INFO]:[API] - Starting mod loading')) throw new Error("无效的ModLog.txt");
-    let hkver: string | undefined = undefined;
-    let apiver: number | undefined = undefined;
+    let hkVer: string | undefined = undefined;
+    let apiVer: number | undefined = undefined;
     const loadedMods: [string, string][] = [];
     const duplicateMods = new Set<string>();
     const index_flm = lines.indexOf('[INFO]:[API] - Finished loading mods:') + 1;
@@ -99,10 +107,10 @@ export async function analyzeModLog(modlinks: ModCollection, text: string) {
             if (parts[1] == 'Failed to load! Duplicate mod detected') {
                 duplicateMods.add(parts[0]);
             } else {
-                if(parts[0] == "Modding API") {
+                if (parts[0] == "Modding API") {
                     const av = parts[1].split('-');
-                    hkver = av[0];
-                    apiver = Number.parseInt(av[1]);
+                    hkVer = av[0];
+                    apiVer = Number.parseInt(av[1]);
                 }
                 loadedMods.push([parts[0], parts[1]]);
             }
@@ -119,7 +127,7 @@ export async function analyzeModLog(modlinks: ModCollection, text: string) {
     const searchNP = new Set<string>();
     for (const mm of text.matchAll(/MissingMethodException: ([\S]+) ([A-Za-z0-9_]+)./ig)) {
         const asmName = mm[2].split(',')[0];
-        if(searchNP.has(asmName)) continue;
+        if (searchNP.has(asmName)) continue;
         searchNP.add(asmName);
         const mods = findModWithFileName(modlinks, [asmName + ".dll"]);
         if (mods.length == 0) continue;
@@ -127,7 +135,7 @@ export async function analyzeModLog(modlinks: ModCollection, text: string) {
     }
     for (const mf of text.matchAll(/MissingFieldException: ([\S]+) ([A-Za-z0-9_]+)./ig)) {
         const asmName = mf[2].split(',')[0];
-        if(searchNP.has(asmName)) continue;
+        if (searchNP.has(asmName)) continue;
         searchNP.add(asmName);
         const mods = findModWithFileName(modlinks, [asmName + ".dll"]);
         if (mods.length == 0) continue;
@@ -136,7 +144,7 @@ export async function analyzeModLog(modlinks: ModCollection, text: string) {
     const requireUpdateMods = new Set<string>();
     const lms = loadedMods.map(x => x[0].replaceAll(' ', '').toLowerCase());
     for (const mod of [...missingMod]) {
-        if(lms.includes(mod.replaceAll(' ', '').toLowerCase())) {
+        if (lms.includes(mod.replaceAll(' ', '').toLowerCase())) {
             missingMod.delete(mod);
             requireUpdateMods.add(mod);
         }
@@ -146,8 +154,8 @@ export async function analyzeModLog(modlinks: ModCollection, text: string) {
         duplicateMods: [...duplicateMods],
         missingMod: [...missingMod],
         requireUpdateMods: [...requireUpdateMods],
-        hkver,
-        apiver
+        hkVer,
+        apiVer
     };
 }
 
@@ -158,10 +166,10 @@ export function findModWithFileSHA(modlinks: ModCollection, sha: string[]) {
         for (const ver in mod) {
             const v = mod[ver];
             if (!v.ei_files?.files) continue;
-            const msha = Object.values(v.ei_files.files);
+            const modSHA = Object.values(v.ei_files.files);
             let u = true;
             for (const s of sha) {
-                if (!msha.includes(s)) {
+                if (!modSHA.includes(s)) {
                     u = false;
                     break;
                 }
@@ -181,10 +189,10 @@ export function findModWithFileName(modlinks: ModCollection, files: string[]) {
         for (const ver in mod) {
             const v = mod[ver];
             if (!v.ei_files?.files) continue;
-            const mfiles = Object.keys(v.ei_files.files).map(x => basename(x));
+            const modFiles = Object.keys(v.ei_files.files).map(x => basename(x));
             let u = true;
             for (const iterator of files) {
-                if (!mfiles.includes(iterator)) {
+                if (!modFiles.includes(iterator)) {
                     u = false;
                     break;
                 }
@@ -198,12 +206,12 @@ export function findModWithFileName(modlinks: ModCollection, files: string[]) {
 }
 
 export function isLaterVersion(a: string, b: string) {
-    const apart = a.split('.');
-    const bpart = b.split('.');
-    for (let i = 0; i < apart.length; i++) {
-        if (i >= bpart.length) return true;
-        const va = Number.parseInt(apart[i]);
-        const vb = Number.parseInt(bpart[i]);
+    const aPart = a.split('.');
+    const bPart = b.split('.');
+    for (let i = 0; i < aPart.length; i++) {
+        if (i >= bPart.length) return true;
+        const va = Number.parseInt(aPart[i]);
+        const vb = Number.parseInt(bPart[i]);
         if (va > vb) return true;
         else if (va < vb) return false;
     }
