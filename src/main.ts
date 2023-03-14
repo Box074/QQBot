@@ -152,8 +152,8 @@ client.on("message.group", async (ev) => {
                 if(text.toLowerCase() == "所有mods" || text.toLowerCase().endsWith("所有mods")) {
                     await printAllMods(ev.group, ev.sender.user_id);
                 }
-                if(text.toLowerCase().startsWith("筛选mods:") || text.toLowerCase().startsWith("筛选mod:")) {
-                    const filter = text.substring(text.indexOf(":") + 1);
+                if(text.toLowerCase().startsWith("筛选mods")) {
+                    const filter = text.substring("筛选mods".length);
                     client.logger.info("Filter: " + filter)
                     await printAllMods(ev.group, ev.sender.user_id, filter);
                 }

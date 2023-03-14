@@ -67,7 +67,7 @@ export async function printModInfo(group: Group, name: string | ModLinksManifest
 最近更新：${getModDate(name.date as string).toLocaleString()}
 大小：${ConvertSize(name.ei_files?.size ?? 0)}
 仓库地址：${name.repository}
-下载地址：https://ghrpoxy.net/${name.link}
+下载地址：https://ghproxy.net/${name.link}
 SHA256: ${name.ei_files?.sha256}
 `
         },
